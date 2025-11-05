@@ -15,13 +15,17 @@ export default fp(async (fastify) => {
     throw fastify.httpErrors.internalServerError("Database configuration missing");
   }
 
+  const isCloudSqlSocket = env.DATABASE_URL.includes("host=/cloudsql/");
+
+  const sslConfig =
+    env.NODE_ENV === "production" && !isCloudSqlSocket
+      ? { rejectUnauthorized: false }
+      : false;
+
   const pool = new Pool({
     connectionString: env.DATABASE_URL,
     max: 10,
-    ssl:
-      env.NODE_ENV === "production"
-        ? { rejectUnauthorized: false }
-        : undefined
+    ssl: sslConfig
   });
 
   fastify.decorate("db", pool);

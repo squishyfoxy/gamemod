@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "shaped-utility-477312-h6"
+  },
+  "targets": {
+    "shaped-utility-477312-h6": {
+      "hosting": {
+        "gamemod": [
+          "shaped-utility-477312-h6"
+        ]
+      }
+    }
+  }
+}

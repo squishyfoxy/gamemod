@@ -5,6 +5,10 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import "./index.css";
+import { applyTheme, loadTheme } from "./lib/theme";
+import { StaffAuthProvider } from "./lib/staffAuth";
+
+applyTheme(loadTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,7 +23,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
+        <StaffAuthProvider>
+          <App />
+        </StaffAuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>
