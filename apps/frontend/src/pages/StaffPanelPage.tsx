@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { AdminSiteCustomizer } from "@/components/AdminSiteCustomizer";
 import { AdminThemeDesigner } from "@/components/AdminThemeDesigner";
@@ -36,7 +36,6 @@ export function StaffPanelPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const navigate = useNavigate();
-  const location = useLocation();
 
   const siteSettings = staffSettings?.site ?? defaultStaffSiteSettings;
 
@@ -62,14 +61,10 @@ export function StaffPanelPage() {
 
     login({ username: matchingUser.username, adminKey: matchingUser.adminKey });
 
-    const redirectParam = new URLSearchParams(location.search).get("redirect");
-    const redirectTo =
-      redirectParam && redirectParam.startsWith("/") ? redirectParam : "/overview";
-
     setUsernameInput("");
     setPasswordInput("");
     setErrorMessage(null);
-    navigate(redirectTo, { replace: true });
+    // Stay on the staff panel after unlocking to continue working with tools.
   };
 
   const handleCreateTopic = (event: FormEvent<HTMLFormElement>) => {

@@ -2,7 +2,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
   type ReactNode
@@ -19,8 +18,6 @@ type StaffAuthContextValue = StaffAuthState & {
   logout: () => void;
 };
 
-const STORAGE_KEY = "gamemod.staff-auth";
-
 const defaultState: StaffAuthState = {
   isAuthenticated: false,
   username: null,
@@ -31,42 +28,8 @@ const StaffAuthContext = createContext<StaffAuthContextValue | undefined>(
   undefined
 );
 
-function loadInitialState(): StaffAuthState {
-  if (typeof window === "undefined") {
-    return defaultState;
-  }
-
-  try {
-    const stored = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      return defaultState;
-    }
-    const parsed = JSON.parse(stored) as StaffAuthState;
-    if (!parsed.adminKey || !parsed.username) {
-      return defaultState;
-    }
-    return {
-      ...parsed,
-      isAuthenticated: true
-    };
-  } catch {
-    return defaultState;
-  }
-}
-
 export function StaffAuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<StaffAuthState>(() => loadInitialState());
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    if (!state.isAuthenticated || !state.adminKey || !state.username) {
-      window.sessionStorage.removeItem(STORAGE_KEY);
-      return;
-    }
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+  const [state, setState] = useState<StaffAuthState>(defaultState);
 
   const login = useCallback((input: { username: string; adminKey: string }) => {
     setState({
