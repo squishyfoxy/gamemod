@@ -18,12 +18,7 @@ type NavItem = {
   requiresAuth?: boolean;
 };
 
-const navigation: NavItem[] = [
-  { to: "/overview", label: "Overview", requiresAuth: true },
-  { to: "/tickets", label: "Tickets", requiresAuth: true },
-  { to: "/analytics", label: "Analytics", requiresAuth: true },
-  { to: "/staff", label: "Staff Login" }
-];
+const navigation: NavItem[] = [{ to: "/staff", label: "Staff Login" }];
 
 export default function App() {
   const { data: health, isFetching } = useApiHealth();

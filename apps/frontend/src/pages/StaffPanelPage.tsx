@@ -15,6 +15,11 @@ const STAFF_USERS = [
     username: "SquishyFoxy",
     password: "1337",
     adminKey: "1337"
+  },
+  {
+    username: "Mod1337",
+    password: "1337",
+    adminKey: "1337"
   }
 ] as const;
 
