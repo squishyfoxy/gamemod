@@ -29,23 +29,36 @@ Create `apps/backend/.env` (or export variables) with:
 
 ```dotenv
 PORT=3000
-DATABASE_URL=postgres://gamemod:gamemod@localhost:5544/gamemod
-REDIS_URL=redis://localhost:6379
+GCP_PROJECT_ID=your-gcp-project-id
+# Provide these when using an explicit service account (recommended for local dev)
+GCP_CLIENT_EMAIL=firestore-service-account@your-gcp-project-id.iam.gserviceaccount.com
+GCP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ADMIN_PASSWORD=changeme123
 ```
 
-`DATABASE_URL` now drives ticket persistence—make sure it points at the Postgres instance started below.
+If you prefer application-default credentials, set `GOOGLE_APPLICATION_CREDENTIALS` to point at your service-account JSON and omit the explicit email/key—the backend will fall back to the default Google Cloud credential chain.
 
-### Database (local)
-
-Spin up Postgres on a non-standard port and run migrations:
+For production, store `ADMIN_PASSWORD` in Secret Manager:
 
 ```bash
-docker compose up -d postgres
-npm run migrate:up
+printf 'super-secret' | gcloud secrets create gamemod-admin-password --replication-policy=automatic --data-file=-
+gcloud secrets add-iam-policy-binding gamemod-admin-password \
+  --member="serviceAccount:904841096457-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
 ```
 
-This provisions Postgres 16 with credentials `gamemod/gamemod` on `localhost:5544` and applies the tickets schema. Shut it down with `docker compose down` when finished.
+Then mount it during Cloud Run deploy (see below).
+### Firestore (local)
+
+The API persists all data in Firestore. For local development you can either:
+
+1. Point at a real Firestore project (quickest). Create a dedicated project, download a service-account key with the "Cloud Datastore User" role, and populate the `.env` variables above.
+2. Or run the Firestore emulator:
+   ```bash
+   gcloud components install cloud-firestore-emulator
+   gcloud beta emulators firestore start --host-port=localhost:8080
+   ```
+   Then export `FIRESTORE_EMULATOR_HOST=localhost:8080` before starting the backend to direct the Firestore client at the emulator.
 
 ### Development Servers
 
@@ -75,24 +88,21 @@ The frontend runs via Vite at `http://localhost:5173` and surfaces API health in
 - `npm run build` – Type-check and build all workspaces.
 - `npm run lint` – Run ESLint across backend and frontend.
 - `npm run format` – Format source files via Prettier.
-- `npm run migrate:up` – Apply database migrations (requires `DATABASE_URL`).
-- `npm run migrate:down` – Roll back the latest migration.
 
 ## Cloud Deployment (Google Cloud)
 
 The production topology targets:
 
 - **Backend/API** → Cloud Run (container built from `apps/backend/Dockerfile`)
-- **Database** → Cloud SQL for PostgreSQL
-- **Frontend** → Firebase Hosting (static build produced by Vite)
+- **Data Store** → Firestore (Native mode)
+- **Frontend** → Google Cloud Storage + Cloud CDN (static build produced by Vite)
 
 ### 1. Prerequisites
 
 ```bash
 gcloud auth login
 gcloud config set project YOUR_GCP_PROJECT_ID
-gcloud services enable run.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
-firebase login
+gcloud services enable run.googleapis.com firestore.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com compute.googleapis.com
 ```
 
 Set a few reusable shell variables for subsequent commands:
@@ -101,28 +111,27 @@ Set a few reusable shell variables for subsequent commands:
 export REGION=us-central1               # pick the region you want
 export ARTIFACT_REPO=gamemod-api        # artifact registry name for backend images
 export SERVICE_NAME=gamemod-api         # Cloud Run service name
-export INSTANCE_ID=gamemod-sql          # Cloud SQL instance name
-export DB_NAME=gamemod
-export DB_USER=gamemod_app
-export DB_PASSWORD='choose-a-strong-password'
 export PROJECT_ID=$(gcloud config get-value project)
-export CONNECTION_NAME="${PROJECT_ID}:${REGION}:${INSTANCE_ID}"
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 ```
 
-### 2. Provision Cloud SQL (PostgreSQL)
+### 2. Provision Firestore (Native mode)
+
+If Firestore is not already enabled for the project, create the default database:
 
 ```bash
-gcloud sql instances create "$INSTANCE_ID" \
-  --database-version=POSTGRES_15 \
-  --tier=db-custom-1-3840 \
-  --region="$REGION" \
-  --storage-auto-increase \
-  --backup \
-  --enable-point-in-time-recovery
-
-gcloud sql databases create "$DB_NAME" --instance "$INSTANCE_ID"
-gcloud sql users create "$DB_USER" --instance "$INSTANCE_ID" --password "$DB_PASSWORD"
+gcloud alpha firestore databases create --location="$REGION" --type=FIRESTORE_NATIVE
 ```
+
+Grant the Cloud Run runtime service account the `Datastore User` role so it can access Firestore:
+
+```bash
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/datastore.user"
+```
+
+For production deployments, prefer creating a dedicated service account with the minimal roles (`roles/run.admin`, `roles/iam.serviceAccountUser`, `roles/datastore.user`) and use it for Cloud Run.
 
 ### 3. Build and push the backend image
 
@@ -144,13 +153,7 @@ gcloud builds submit . \
 
 ### 4. Deploy the Cloud Run service
 
-Construct a Cloud SQL connection string that uses the Unix domain socket exposed by Cloud Run:
-
-```bash
-export DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@/${DB_NAME}?host=/cloudsql/${CONNECTION_NAME}"
-```
-
-Deploy the service with the Cloud SQL connector attached and HTTPS enabled:
+Deploy the service, passing environment variables required at runtime. Store secrets (like `ADMIN_PASSWORD`) in Secret Manager and mount them as env vars in production.
 
 ```bash
 gcloud run deploy "$SERVICE_NAME" \
@@ -158,30 +161,13 @@ gcloud run deploy "$SERVICE_NAME" \
   --region "$REGION" \
   --platform managed \
   --allow-unauthenticated \
-  --add-cloudsql-instances "$CONNECTION_NAME" \
-  --set-env-vars "NODE_ENV=production,DATABASE_URL=${DATABASE_URL},ADMIN_PASSWORD=$(openssl rand -base64 32)"
+  --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID}"
+  --set-secrets "ADMIN_PASSWORD=gamemod-admin-password:latest"
 ```
 
 Cloud Run supplies the `PORT` environment variable automatically; the Fastify app listens on it.
 
-### 5. Run database migrations in Cloud Run
-
-Use a one-off Cloud Run job that reuses the same container image and attaches the Cloud SQL connector:
-
-```bash
-gcloud run jobs create gamemod-migrate \
-  --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/backend:latest" \
-  --region "$REGION" \
-  --add-cloudsql-instances "$CONNECTION_NAME" \
-  --set-env-vars "NODE_ENV=production,DATABASE_URL=${DATABASE_URL}" \
-  --command npm --args "run","migrate:up"
-
-gcloud run jobs execute gamemod-migrate --region "$REGION"
-```
-
-Re-run the job whenever new migrations ship.
-
-### 6. Deploy the frontend to Firebase Hosting
+### 5. Deploy the frontend to Cloud Storage + Cloud CDN
 
 1. Create `apps/frontend/.env.production` (or set the variable inline) so Vite embeds the Cloud Run URL:
 
@@ -189,22 +175,53 @@ Re-run the job whenever new migrations ship.
    VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL
    ```
 
-2. Build and deploy:
+2. Build the frontend:
 
    ```bash
-   firebase use YOUR_FIREBASE_PROJECT_ID
-   VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL npm run deploy:frontend
+   npm run build --workspace frontend
    ```
 
-   The `predeploy` hook in `firebase.json` triggers the Vite build before files are uploaded.
+3. Upload the static assets to a storage bucket and make them publicly readable (or serve through Cloud CDN with an HTTPS load balancer):
 
-### 7. Grant Firebase Hosting access to the API
+   ```bash
+   export WEB_BUCKET=gs://gamemod-web-$PROJECT_ID
+   gsutil mb -l "$REGION" "$WEB_BUCKET"
+   gsutil -m rsync -r apps/frontend/dist "$WEB_BUCKET"
+   gsutil iam ch allUsers:objectViewer "$WEB_BUCKET"
+   ```
 
-The backend enables CORS for all origins by default. If you want to restrict it to Firebase domains, tighten the configuration in `apps/backend/src/app.ts`.
+4. To front the bucket with Cloud CDN, create a backend bucket and global HTTP(S) load balancer:
+
+   ```bash
+   gcloud compute backend-buckets create gamemod-frontend-bucket \
+     --gcs-bucket-name="$WEB_BUCKET" \
+     --enable-cdn
+
+   gcloud compute url-maps create gamemod-frontend-map \
+     --default-backend-bucket=gamemod-frontend-bucket
+
+   gcloud compute target-http-proxies create gamemod-frontend-proxy \
+     --url-map=gamemod-frontend-map
+
+   gcloud compute forwarding-rules create gamemod-frontend-forwarding-rule \
+     --global \
+     --target-http-proxy=gamemod-frontend-proxy \
+     --ports=80
+
+   gcloud compute forwarding-rules describe gamemod-frontend-forwarding-rule \
+     --global \
+     --format="value(IPAddress)"
+   ```
+
+   Map your domain’s A record to the returned IP address or use it directly for testing. For HTTPS, provision a certificate and swap to a target HTTPS proxy.
+
+### 6. Restrict API access (optional)
+
+The backend enables CORS for all origins by default. To scope it down to your Cloud Storage site or custom domains, adjust the configuration in `apps/backend/src/app.ts`.
 
 ---
 
-Once deployed, the Cloud Run service exposes the API over HTTPS, Firebase Hosting serves the static frontend, and the two communicate through the URL you injected into the Vite build. Use Cloud Run revisions for rollbacks and Cloud SQL automated backups for data recovery.
+Once deployed, the Cloud Run service exposes the API over HTTPS, Firestore stores application data, and Cloud Storage serves the static frontend. Use Cloud Run revisions for rollbacks and Cloud Logging/Trace for observability.
 
 ## Roadmap Notes
 

@@ -13,7 +13,6 @@ RUN npm ci --workspace backend
 
 # Copy backend sources and build the TypeScript project
 COPY apps/backend/src apps/backend/src
-COPY apps/backend/migrations apps/backend/migrations
 RUN npm run build --workspace backend
 # Reinstall backend dependencies locally without workspace linking so runtime has everything needed
 RUN npm install --prefix apps/backend --omit=dev --install-links=false --package-lock=false
@@ -26,7 +25,6 @@ ENV PORT=8080
 COPY --from=builder /usr/src/app/apps/backend/dist ./dist
 COPY --from=builder /usr/src/app/apps/backend/node_modules ./node_modules
 COPY --from=builder /usr/src/app/apps/backend/package.json ./package.json
-COPY --from=builder /usr/src/app/apps/backend/migrations ./migrations
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

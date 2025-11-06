@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { FieldValue } from "@google-cloud/firestore";
 import { z } from "zod";
 
 import { env } from "../../env";
@@ -45,25 +46,27 @@ const defaultSite: SiteSettings = {
 };
 
 async function getOrCreateSettings(app: FastifyInstance) {
-  const existing = await app.db.query<{
-    theme: ThemeSettings;
-    site: SiteSettings;
-  }>(
-    `SELECT theme, site
-     FROM staff_settings
-     WHERE id = 1`
-  );
+  const docRef = app.firestore.collection("config").doc("staffSettings");
+  const snapshot = await docRef.get();
 
-  if (existing.rows.length > 0) {
-    return existing.rows[0];
+  if (snapshot.exists) {
+    const data = snapshot.data() as {
+      theme?: ThemeSettings;
+      site?: SiteSettings;
+    };
+
+    return {
+      theme: data.theme ?? defaultTheme,
+      site: data.site ?? defaultSite
+    };
   }
 
-  await app.db.query(
-    `INSERT INTO staff_settings (id, theme, site)
-     VALUES (1, $1::jsonb, $2::jsonb)
-     ON CONFLICT (id) DO NOTHING`,
-    [JSON.stringify(defaultTheme), JSON.stringify(defaultSite)]
-  );
+  await docRef.set({
+    theme: defaultTheme,
+    site: defaultSite,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp()
+  });
 
   return {
     theme: defaultTheme,
@@ -108,15 +111,17 @@ export async function registerStaffRoutes(app: FastifyInstance) {
     const nextTheme = parsed.theme ?? current.theme;
     const nextSite = parsed.site ?? current.site;
 
-    await app.db.query(
-      `INSERT INTO staff_settings (id, theme, site, updated_at)
-       VALUES (1, $1::jsonb, $2::jsonb, NOW())
-       ON CONFLICT (id)
-       DO UPDATE SET theme = EXCLUDED.theme,
-                     site = EXCLUDED.site,
-                     updated_at = NOW()`,
-      [JSON.stringify(nextTheme), JSON.stringify(nextSite)]
-    );
+    await app.firestore
+      .collection("config")
+      .doc("staffSettings")
+      .set(
+        {
+          theme: nextTheme,
+          site: nextSite,
+          updatedAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
 
     return {
       theme: nextTheme,
